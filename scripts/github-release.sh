@@ -51,8 +51,9 @@ require_cmd sed
 
 # ----- 사전 검증 -----
 
-# 1. gh 로그인
-gh auth status >/dev/null 2>&1 || die "gh CLI에 로그인되어 있지 않습니다. 'gh auth login' 실행."
+# 1. gh 로그인 (github.com 한정 — 사내 Enterprise 호스트의 timeout이 섞이지 않도록)
+gh auth status --hostname github.com >/dev/null 2>&1 \
+  || die "gh CLI가 github.com에 로그인되어 있지 않습니다. 'gh auth login -h github.com' 실행."
 
 # 2. git working tree clean
 if [[ -n "$(git status --porcelain)" ]]; then
