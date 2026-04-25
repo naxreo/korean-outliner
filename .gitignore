@@ -1,0 +1,78 @@
+# ============================================================================
+# macOS Korean Outliner
+# ============================================================================
+
+# ----- macOS system -----
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+.fseventsd
+
+# ----- Build / Distribution -----
+# release.sh 산출물
+build/
+dist/
+
+# ----- Xcode -----
+DerivedData/
+*.xcuserstate
+*.xcscmblueprint
+xcuserdata/
+
+# ----- XcodeGen 생성물 (project.yml이 SSoT, 재생성 가능) -----
+# 재생성: ./scripts/release.sh project
+KoreanOutliner.xcodeproj/
+Resources/Info.plist
+Resources/KoreanOutliner.entitlements
+
+# ----- Swift Package Manager -----
+.build/
+.swiftpm/
+Packages/
+Package.resolved
+Package.pins
+
+# ----- Packaging artifacts -----
+*.app
+*.dmg
+*.pkg
+*.zip
+*.tar.gz
+
+# ----- 코드사인 / 시크릿 -----
+*.p12
+*.cer
+*.mobileprovision
+*.pem
+*.key
+.env
+.env.*
+
+# ----- Editor / IDE -----
+*.swp
+*~
+.#*
+\#*\#
+*.bak
+.idea/
+.vscode/
+
+# ----- Logs -----
+*.log
+
+# ----- Claude Code 런타임 산출물 -----
+# 하네스 정의(.claude/agents/, .claude/skills/)는 추적하되,
+# 실행 시 생성되는 임시 파일/락/캐시/메모리는 제외
+.claude/*.lock
+.claude/*.log
+.claude/cache/
+.claude/teams/
+.claude/tasks/
+.claude/memory/
+.claude/image-cache/
+.claude/projects/
+.claude/scheduled_tasks*
+.claude/settings.local.json

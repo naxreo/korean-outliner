@@ -1,0 +1,155 @@
+name: Build & Publish Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '재빌드할 기존 태그 (예: v1.0.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build .dmg / .pkg on macOS
+    runs-on: macos-14
+    timeout-minutes: 40
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: Resolve tag name
+        id: tag
+        run: |
+          if [ -n "${{ github.event.inputs.tag }}" ]; then
+            TAG="${{ github.event.inputs.tag }}"
+          else
+            TAG="${GITHUB_REF#refs/tags/}"
+          fi
+          VERSION="${TAG#v}"
+          echo "tag=${TAG}"         >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "▸ tag=${TAG}, version=${VERSION}"
+
+      - name: Select Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      # ----- 코드사인 (선택) -----
+      # 다음 secrets가 모두 설정된 경우에만 동작:
+      #   MACOS_CERTIFICATE_P12_BASE64  (Developer ID Application + Installer 통합 P12를 base64)
+      #   MACOS_CERTIFICATE_PASSWORD    (P12 password)
+      #   DEVELOPER_ID_APPLICATION      ("Developer ID Application: 이름 (TEAMID)")
+      #   DEVELOPER_ID_INSTALLER        ("Developer ID Installer: 이름 (TEAMID)")
+      - name: Import codesign certificate
+        id: codesign
+        env:
+          MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          if [ -z "$MACOS_CERTIFICATE_P12_BASE64" ]; then
+            echo "::notice::MACOS_CERTIFICATE_P12_BASE64 미설정 → unsigned 빌드"
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -base64 24)"
+          CERT_PATH="$RUNNER_TEMP/cert.p12"
+
+          echo "$MACOS_CERTIFICATE_P12_BASE64" | base64 --decode > "$CERT_PATH"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" \
+            -P "$MACOS_CERTIFICATE_PASSWORD" \
+            -A -t cert -f pkcs12 \
+            -k "$KEYCHAIN_PATH"
+          security list-keychain -d user -s "$KEYCHAIN_PATH" $(security list-keychain -d user | xargs)
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" \
+            "$KEYCHAIN_PATH" >/dev/null
+
+          rm -f "$CERT_PATH"
+          echo "available=true" >> "$GITHUB_OUTPUT"
+          echo "keychain=$KEYCHAIN_PATH" >> "$GITHUB_OUTPUT"
+          echo "keychain_password=$KEYCHAIN_PASSWORD" >> "$GITHUB_OUTPUT"
+
+      - name: Build .app, .dmg, .pkg
+        env:
+          DEVELOPER_ID_APPLICATION: ${{ secrets.DEVELOPER_ID_APPLICATION }}
+          DEVELOPER_ID_INSTALLER: ${{ secrets.DEVELOPER_ID_INSTALLER }}
+        run: |
+          chmod +x scripts/release.sh
+          ./scripts/release.sh all
+
+      # ----- Notarization (선택) -----
+      # 다음 secrets가 모두 설정된 경우에만 동작 (codesign도 함께 설정되어 있어야 의미 있음):
+      #   NOTARY_APPLE_ID       (Apple ID 이메일)
+      #   NOTARY_TEAM_ID        (10자리 Team ID)
+      #   NOTARY_APP_PASSWORD   (App-specific password — appleid.apple.com에서 생성)
+      - name: Notarize artifacts
+        if: steps.codesign.outputs.available == 'true'
+        env:
+          NOTARY_APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
+          NOTARY_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
+          NOTARY_APP_PASSWORD: ${{ secrets.NOTARY_APP_PASSWORD }}
+          KEYCHAIN_PATH: ${{ steps.codesign.outputs.keychain }}
+        run: |
+          if [ -z "$NOTARY_APPLE_ID" ] || [ -z "$NOTARY_TEAM_ID" ] || [ -z "$NOTARY_APP_PASSWORD" ]; then
+            echo "::notice::Notarization secrets 미설정 → notarize 스킵"
+            exit 0
+          fi
+          PROFILE="gh-notary-profile"
+          xcrun notarytool store-credentials "$PROFILE" \
+            --apple-id "$NOTARY_APPLE_ID" \
+            --team-id "$NOTARY_TEAM_ID" \
+            --password "$NOTARY_APP_PASSWORD" \
+            --keychain "$KEYCHAIN_PATH"
+          for asset in dist/*.dmg dist/*.pkg; do
+            [ -e "$asset" ] || continue
+            echo "▸ notarize: $asset"
+            NOTARY_PROFILE="$PROFILE" ./scripts/release.sh notarize "$asset"
+          done
+
+      - name: Verify build artifacts
+        run: |
+          ls -la dist/
+          test -n "$(ls dist/*.dmg 2>/dev/null)" || { echo "✘ DMG 산출물 없음"; exit 1; }
+          test -n "$(ls dist/*.pkg 2>/dev/null)" || { echo "✘ PKG 산출물 없음"; exit 1; }
+
+      - name: Upload to GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "▸ 기존 release에 업로드: $TAG"
+            gh release upload "$TAG" dist/*.dmg dist/*.pkg --clobber
+          else
+            echo "▸ 신규 release 생성: $TAG"
+            gh release create "$TAG" \
+              --title "$TAG" \
+              --generate-notes \
+              dist/*.dmg dist/*.pkg
+          fi
+
+      - name: Cleanup keychain
+        if: always() && steps.codesign.outputs.available == 'true'
+        env:
+          KEYCHAIN_PATH: ${{ steps.codesign.outputs.keychain }}
+        run: |
+          security delete-keychain "$KEYCHAIN_PATH" 2>/dev/null || true
