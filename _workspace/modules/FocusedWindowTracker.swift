@@ -64,9 +64,18 @@ public final class FocusedWindowTracker: FocusedWindowTracking {
     /// 추가 변화가 없으면 ("settle") 최종 프레임을 emit하기 위한 디바운스 워크 아이템.
     private var settleWorkItem: DispatchWorkItem?
 
+    /// 윈도우 파괴/미니마이즈 후 시스템이 같은 앱의 다른 윈도우로 포커스를
+    /// 옮기는 데는 시간이 걸린다. 즉시 재조회가 nil이라면 짧은 지연 후 다시
+    /// 시도하는 워크 아이템(예: iTerm에서 셸 종료 + Cmd+W).
+    private var focusRefreshWorkItem: DispatchWorkItem?
+
     /// 이동/리사이즈 settle 디바운스 지연. 너무 짧으면 깜빡임, 너무 길면 정착 후
     /// 외곽선이 늦게 다시 나타나는 체감.
     private static let settleDelay: TimeInterval = 0.18
+
+    /// 윈도우 파괴 직후 포커스 재조회 백오프 단계.
+    /// 시스템이 다음 포커스 윈도우를 결정할 때까지 단계적으로 기다린다.
+    private static let focusRefreshBackoff: [TimeInterval] = [0.06, 0.18, 0.4]
 
     public init() {}
 
@@ -87,6 +96,7 @@ public final class FocusedWindowTracker: FocusedWindowTracking {
         }
 
         isStarted = true
+        DiagLogger.mark("tracker.start (log path: \(DiagLogger.logURL?.path ?? "?"))")
 
         workspaceObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didActivateApplicationNotification,
@@ -96,6 +106,7 @@ public final class FocusedWindowTracker: FocusedWindowTracking {
             guard let self = self else { return }
             guard let app = note.userInfo?[NSWorkspace.applicationUserInfoKey]
                     as? NSRunningApplication else { return }
+            DiagLogger.log("workspace didActivate bundle=\(app.bundleIdentifier ?? "?") name=\(app.localizedName ?? "?") pid=\(app.processIdentifier)")
             self.attach(to: app)
         }
 
@@ -115,6 +126,7 @@ public final class FocusedWindowTracker: FocusedWindowTracking {
     public func stop() {
         guard isStarted else { return }
         cancelSettle()
+        cancelFocusRefresh()
         teardown()
         isStarted = false
         current = nil
@@ -171,6 +183,12 @@ public final class FocusedWindowTracker: FocusedWindowTracking {
             kAXApplicationHiddenNotification as CFString, context)
         AXObserverAddNotification(obs, appElement,
             kAXApplicationShownNotification as CFString, context)
+        // 단축키 실행으로 앱이 막 활성화된 시점에는 포커스 윈도우가 아직 AX에
+        // 노출되지 않아 focusedWindow(of:)가 nil을 반환할 수 있다. 일부 앱은
+        // 후속 kAXFocusedWindowChangedNotification을 보내지 않으므로 윈도우
+        // 생성 알림을 별도로 구독해 fallback 경로를 만든다.
+        AXObserverAddNotification(obs, appElement,
+            kAXWindowCreatedNotification as CFString, context)
 
         CFRunLoopAddSource(
             CFRunLoopGetMain(),
@@ -179,7 +197,9 @@ public final class FocusedWindowTracker: FocusedWindowTracking {
         )
 
         // Resolve the currently focused window (if any) and start observing it.
-        if let window = focusedWindow(of: appElement) {
+        let initialFocused = focusedWindow(of: appElement)
+        DiagLogger.log("attach to bundle=\(app.bundleIdentifier ?? "?") initialFocused=\(DiagLogger.describeOptional(initialFocused))")
+        if let window = initialFocused {
             attachWindow(window, observer: obs, context: context)
             emit(window: window, app: app)
         } else {
@@ -227,9 +247,11 @@ public final class FocusedWindowTracker: FocusedWindowTracking {
     }
 
     private func detachObserver() {
-        // 앱 전환 시점에 살아있는 settle 워크 아이템이 fire되면 이전 앱 컨텍스트로
-        // emit이 일어나 외곽선이 잘못된 위치에 잠시 표시될 수 있음. 먼저 정리한다.
+        // 앱 전환 시점에 살아있는 settle/focus-refresh 워크 아이템이 fire되면
+        // 이전 앱 컨텍스트로 emit이 일어나 외곽선이 잘못된 위치/타이밍으로 표시될
+        // 수 있음. 먼저 정리한다.
         cancelSettle()
+        cancelFocusRefresh()
         if let obs = axObserver {
             detachActiveWindow(observer: obs)
             if let appElement = activeAppElement {
@@ -239,6 +261,8 @@ public final class FocusedWindowTracker: FocusedWindowTracking {
                     kAXApplicationHiddenNotification as CFString)
                 AXObserverRemoveNotification(obs, appElement,
                     kAXApplicationShownNotification as CFString)
+                AXObserverRemoveNotification(obs, appElement,
+                    kAXWindowCreatedNotification as CFString)
             }
             CFRunLoopRemoveSource(
                 CFRunLoopGetMain(),
@@ -266,9 +290,16 @@ public final class FocusedWindowTracker: FocusedWindowTracking {
         guard isStarted else { return }
         guard let app = activeApp, let obs = axObserver else { return }
 
+        if DiagLogger.isEnabled {
+            let currentFocusedDesc = DiagLogger.describeOptional(activeAppElement.flatMap { focusedWindow(of: $0) })
+            let elemDesc = DiagLogger.describe(element)
+            DiagLogger.log("ax \(name) elem=\(elemDesc) focused=\(currentFocusedDesc) bundle=\(app.bundleIdentifier ?? "?")")
+        }
+
         switch name {
         case kAXFocusedWindowChangedNotification as String:
             cancelSettle()
+            cancelFocusRefresh()
             if let window = focusedWindow(of: activeAppElement ?? element) {
                 let context = Unmanaged.passUnretained(self).toOpaque()
                 attachWindow(window, observer: obs, context: context)
@@ -287,25 +318,96 @@ public final class FocusedWindowTracker: FocusedWindowTracking {
             scheduleSettle(window: element, app: app)
 
         case kAXUIElementDestroyedNotification as String,
-             kAXWindowMiniaturizedNotification as String,
-             kAXApplicationHiddenNotification as String:
+             kAXWindowMiniaturizedNotification as String:
+            // 포커스 윈도우가 파괴/최소화되면 같은 앱의 다른 윈도우로 자연 포커스
+            // 전환되지만 kAXFocusedWindowChangedNotification이 항상 보장되지
+            // 않는다(예: iTerm 두 창 중 하나 닫기). 직접 재조회한다.
+            // 시스템이 다음 포커스 윈도우를 확정하기까지 짧은 지연이 있으므로
+            // 즉시 시도가 실패하면 백오프 재시도까지 예약해 둔다.
             cancelSettle()
+            cancelFocusRefresh()
+            detachActiveWindow(observer: obs)
+            refreshFocusedWindow(app: app, observer: obs)
+            if current == nil {
+                scheduleFocusRefresh(app: app, observer: obs, attempt: 0)
+            }
+
+        case kAXApplicationHiddenNotification as String:
+            // 앱 전체 숨김(Cmd+H)은 다른 앱이 frontmost가 되며
+            // didActivateApplicationNotification이 처리한다.
+            cancelSettle()
+            cancelFocusRefresh()
             detachActiveWindow(observer: obs)
             current = nil
             subject.send(nil)
 
-        case kAXWindowDeminiaturizedNotification as String,
+        case kAXWindowCreatedNotification as String,
+             kAXWindowDeminiaturizedNotification as String,
              kAXApplicationShownNotification as String:
+            // 새 윈도우 생성/디미니어쳐/앱 노출 → 포커스 윈도우 재조회.
             cancelSettle()
-            if let window = focusedWindow(of: activeAppElement ?? element) {
-                let context = Unmanaged.passUnretained(self).toOpaque()
-                attachWindow(window, observer: obs, context: context)
-                emit(window: window, app: app)
-            }
+            cancelFocusRefresh()
+            refreshFocusedWindow(app: app, observer: obs)
 
         default:
             break
         }
+    }
+
+    /// 같은 앱 컨텍스트에서 현재 포커스 윈도우를 재조회해 attach + emit 한다.
+    /// 윈도우가 없으면 nil emit. 호출 전에 cancelSettle/detachActiveWindow를
+    /// 적절히 마치고 들어와야 한다.
+    private func refreshFocusedWindow(app: NSRunningApplication, observer: AXObserver) {
+        guard let appEl = activeAppElement else {
+            DiagLogger.log("refresh skipped: activeAppElement nil")
+            current = nil
+            subject.send(nil)
+            return
+        }
+        let window = focusedWindow(of: appEl)
+        DiagLogger.log("refresh result=\(DiagLogger.describeOptional(window)) bundle=\(app.bundleIdentifier ?? "?")")
+        if let window = window {
+            let context = Unmanaged.passUnretained(self).toOpaque()
+            attachWindow(window, observer: observer, context: context)
+            emit(window: window, app: app)
+        } else {
+            current = nil
+            subject.send(nil)
+        }
+    }
+
+    /// 윈도우 파괴/미니마이즈 직후 시스템 포커스 이전이 늦는 경우, 백오프 단계마다
+    /// `refreshFocusedWindow`를 시도. 새 포커스 윈도우가 잡히면 그 시점에서 종료.
+    private func scheduleFocusRefresh(
+        app: NSRunningApplication,
+        observer: AXObserver,
+        attempt: Int
+    ) {
+        guard attempt < Self.focusRefreshBackoff.count else {
+            DiagLogger.log("refresh-retry exhausted")
+            return
+        }
+        let delay = Self.focusRefreshBackoff[attempt]
+        DiagLogger.log("refresh-retry scheduled attempt=\(attempt) delay=\(delay)s")
+        let work = DispatchWorkItem { [weak self] in
+            guard let self = self, self.isStarted else { return }
+            guard self.current == nil, self.activeApp === app else {
+                DiagLogger.log("refresh-retry attempt=\(attempt) skipped (current=\(self.current == nil ? "nil" : "set") activeMatches=\(self.activeApp === app))")
+                return
+            }
+            DiagLogger.log("refresh-retry attempt=\(attempt) firing")
+            self.refreshFocusedWindow(app: app, observer: observer)
+            if self.current == nil {
+                self.scheduleFocusRefresh(app: app, observer: observer, attempt: attempt + 1)
+            }
+        }
+        focusRefreshWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+    }
+
+    private func cancelFocusRefresh() {
+        focusRefreshWorkItem?.cancel()
+        focusRefreshWorkItem = nil
     }
 
     // MARK: Move/resize settle debounce

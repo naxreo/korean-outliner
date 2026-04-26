@@ -66,6 +66,11 @@ public final class OverlayRenderer: OverlayRendering {
     public func apply(frame: WindowFrame?) {
         assertMain()
         currentFrame = frame
+        if let f = frame {
+            DiagLogger.log("renderer.apply(frame) bundle=\(f.appBundleID) frame=\(Int(f.frame.origin.x)),\(Int(f.frame.origin.y)) \(Int(f.frame.width))x\(Int(f.frame.height))")
+        } else {
+            DiagLogger.log("renderer.apply(frame) <nil>")
+        }
         render()
     }
 
@@ -87,10 +92,12 @@ public final class OverlayRenderer: OverlayRendering {
 
     private func render() {
         guard currentConfig.isEnabled else {
+            DiagLogger.log("renderer.render -> hide (disabled)")
             controller.hide()
             return
         }
         guard let frame = currentFrame else {
+            DiagLogger.log("renderer.render -> hide (no frame)")
             controller.hide()
             return
         }

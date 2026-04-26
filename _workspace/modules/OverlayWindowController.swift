@@ -21,29 +21,37 @@ final class OverlayWindowController {
     /// - 적합한 NSScreen을 찾지 못하면 메인 스크린 폴백, 그래도 없으면 스킵.
     func show(at windowFrame: WindowFrame, config: OverlayConfig, language: InputLanguage) {
         guard windowFrame.frame.width > 0, windowFrame.frame.height > 0 else {
+            DiagLogger.log("overlay.show -> hide (zero size)")
             hide()
             return
         }
         guard let screen = windowFrame.screen ?? NSScreen.main else {
             // 변환 기준 스크린 없음 — 안전하게 숨김
+            DiagLogger.log("overlay.show -> hide (no screen)")
             hide()
             return
         }
 
         let nsFrame = Self.nsRect(from: windowFrame.frame, on: screen)
+        let wasVisible = window.isVisible
 
         // setFrame은 contentView bounds 갱신을 동반함 → 묵시 애니메이션 차단을
         // 위해 CATransaction begin/commit으로 감싼다.
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        window.setFrame(nsFrame, display: false)
+        window.setFrame(nsFrame, display: true)
         CATransaction.commit()
 
         contentView.update(config: config, language: language)
 
-        if !window.isVisible {
-            window.orderFrontRegardless()
-        }
+        // 윈도우 파괴/포커스 전환 등 외부 이벤트에 의해 macOS가 묵시적으로
+        // 오버레이 윈도우를 숨기는 경우가 있다(특히 .transient collectionBehavior
+        // 와 결합 시). isVisible 캐시를 신뢰하지 말고 매 렌더마다 명시적으로
+        // 전면 정렬한다 — 이미 visible이면 멱등.
+        window.orderFrontRegardless()
+
+        let nowVisible = window.isVisible
+        DiagLogger.log("overlay.show ns=\(Int(nsFrame.origin.x)),\(Int(nsFrame.origin.y)) \(Int(nsFrame.width))x\(Int(nsFrame.height)) wasVisible=\(wasVisible) nowVisible=\(nowVisible)")
     }
 
     /// 입력 언어 또는 설정만 변경되었을 때 — 윈도우 프레임은 유지하고 색만 갱신.
@@ -53,6 +61,7 @@ final class OverlayWindowController {
 
     func hide() {
         if window.isVisible {
+            DiagLogger.log("overlay.hide (was visible)")
             window.orderOut(nil)
         }
     }
