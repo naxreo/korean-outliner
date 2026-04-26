@@ -389,6 +389,23 @@ public final class FocusedWindowTracker: FocusedWindowTracking {
         return CGRect(origin: origin, size: size)
     }
 
+    /// Finder 데스크톱 래퍼 식별. 실제 Finder 윈도우(브라우저, Get Info 다이얼로그
+    /// 등)는 항상 AXSubrole을 가진다(`AXStandardWindow`, `AXDialog` 등). 데스크톱
+    /// 래퍼는 subrole이 누락되거나 빈 문자열이다. 이 차이를 감지에 사용한다.
+    private func isDesktopWrapper(window: AXUIElement, app: NSRunningApplication) -> Bool {
+        guard app.bundleIdentifier == "com.apple.finder" else { return false }
+        var subroleValue: AnyObject?
+        let result = AXUIElementCopyAttributeValue(
+            window, kAXSubroleAttribute as CFString, &subroleValue
+        )
+        guard result == .success,
+              let subrole = subroleValue as? String,
+              !subrole.isEmpty else {
+            return true
+        }
+        return false
+    }
+
     private func windowID(of window: AXUIElement) -> CGWindowID? {
         // _AXUIElementGetWindow is private SPI. We avoid it and let consumers
         // rely on appBundleID + frame for matching. Returning nil is allowed
@@ -398,6 +415,16 @@ public final class FocusedWindowTracker: FocusedWindowTracking {
     }
 
     private func emit(window: AXUIElement, app: NSRunningApplication) {
+        // Finder가 활성 앱이지만 열린 Finder 창이 하나도 없으면(부팅 직후, 모든
+        // 창을 닫은 상태) kAXFocusedWindow는 데스크톱 래퍼 요소를 반환한다. 이
+        // 요소의 frame은 화면 전체와 거의 같아 외곽선이 바탕화면 가장자리에
+        // 그려지는 시각적 버그가 된다. 사용자가 입력하는 대상이 아니므로 거른다.
+        if isDesktopWrapper(window: window, app: app) {
+            current = nil
+            subject.send(nil)
+            return
+        }
+
         guard let rect = frame(of: window) else {
             // Frame query failed (e.g. system UI app, windowless active app,
             // transient AX failure). Treat as "no window to outline" so the
