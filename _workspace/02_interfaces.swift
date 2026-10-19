@@ -146,6 +146,10 @@ public struct OverlayConfig: Codable, Equatable {
     public var sides: OverlaySides
     /// 마스터 토글. false이면 OverlayRenderer는 어떤 입력에도 그리지 않는다.
     public var isEnabled: Bool
+    /// true이면 한/영 입력 상태를 무시하고 포커스 윈도우를 focusColor 단일 색상으로만 표시한다.
+    public var ignoresInputSource: Bool
+    /// ignoresInputSource 모드에서 사용하는 외곽선 색상.
+    public var focusColor: ColorData
 
     public init(
         koreanColor: ColorData,
@@ -154,7 +158,9 @@ public struct OverlayConfig: Codable, Equatable {
         lengthRatio: CGFloat = 1.0,
         opacity: CGFloat = 1.0,
         sides: OverlaySides,
-        isEnabled: Bool
+        isEnabled: Bool,
+        ignoresInputSource: Bool = false,
+        focusColor: ColorData = OverlayConfig.defaultFocusColor
     ) {
         self.koreanColor = koreanColor
         self.englishColor = englishColor
@@ -163,7 +169,11 @@ public struct OverlayConfig: Codable, Equatable {
         self.opacity = max(0, min(1, opacity))
         self.sides = sides
         self.isEnabled = isEnabled
+        self.ignoresInputSource = ignoresInputSource
+        self.focusColor = focusColor
     }
+
+    public static let defaultFocusColor = ColorData(red: 0.20, green: 0.80, blue: 0.40, alpha: 1.0) // green
 
     /// 합리적 기본값. PreferencesStore가 첫 실행 시 사용.
     public static let `default` = OverlayConfig(
@@ -176,7 +186,7 @@ public struct OverlayConfig: Codable, Equatable {
         isEnabled: true
     )
 
-    // 기존 OverlayConfig.v1로 저장된 데이터(lengthRatio/opacity 누락)와 호환.
+    // 기존 OverlayConfig.v1로 저장된 데이터(lengthRatio/opacity/ignoresInputSource/focusColor 누락)와 호환.
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let korean   = try c.decode(ColorData.self, forKey: .koreanColor)
@@ -186,6 +196,8 @@ public struct OverlayConfig: Codable, Equatable {
         let opa      = try c.decodeIfPresent(CGFloat.self, forKey: .opacity) ?? 1.0
         let sides    = try c.decode(OverlaySides.self, forKey: .sides)
         let enabled  = try c.decode(Bool.self,         forKey: .isEnabled)
+        let ignores  = try c.decodeIfPresent(Bool.self, forKey: .ignoresInputSource) ?? false
+        let focus    = try c.decodeIfPresent(ColorData.self, forKey: .focusColor) ?? OverlayConfig.defaultFocusColor
         self.init(
             koreanColor: korean,
             englishColor: english,
@@ -193,7 +205,9 @@ public struct OverlayConfig: Codable, Equatable {
             lengthRatio: length,
             opacity: opa,
             sides: sides,
-            isEnabled: enabled
+            isEnabled: enabled,
+            ignoresInputSource: ignores,
+            focusColor: focus
         )
     }
 }

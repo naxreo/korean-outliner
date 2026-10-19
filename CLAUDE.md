@@ -23,3 +23,4 @@
 | 2026-04-25 | 권한 자가 진단/복구 도구 | AXPermission.swift, AppRestart.swift, PreferencesView.swift | tccutil reset + 자동 재시작 버튼. /Applications 외부 경로 경고 포함 |
 | 2026-04-25 | README.md 작성 | README.md | 사용자/개발자용 진입 문서. 기능·설치·트러블슈팅·아키텍처 요약 |
 | 2026-04-25 | GitHub Release 자동화 | scripts/github-release.sh, .github/workflows/release.yml | tag push → Actions가 DMG/PKG 빌드+notarize+release 업로드 자동화 |
+| 2026-10-19 | 포커스 표시 전용 모드 (한/영 상태 무시) | 02_interfaces.swift(OverlayConfig), OverlayContentView, PreferencesView | 사용자 요청. ignoresInputSource + focusColor 추가, 구버전 영속 데이터는 decodeIfPresent로 호환 |

@@ -165,24 +165,45 @@ public struct PreferencesView: View {
 
     private var colorSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            ColorPicker(
-                "한글 입력 색상",
-                selection: Binding(
-                    get: { store.config.koreanColor.swiftUIColor },
-                    set: { store.config.koreanColor = ColorData(swiftUI: $0) }
-                ),
-                supportsOpacity: true
-            )
-            ColorPicker(
-                "영문 입력 색상",
-                selection: Binding(
-                    get: { store.config.englishColor.swiftUIColor },
-                    set: { store.config.englishColor = ColorData(swiftUI: $0) }
-                ),
-                supportsOpacity: true
-            )
+            Toggle(isOn: bind(\.ignoresInputSource)) {
+                Text("한/영 상태 무시 (포커스 윈도우만 표시)")
+            }
+            .toggleStyle(.switch)
+
+            if store.config.ignoresInputSource {
+                ColorPicker(
+                    "외곽선 색상",
+                    selection: Binding(
+                        get: { store.config.focusColor.swiftUIColor },
+                        set: { store.config.focusColor = ColorData(swiftUI: $0) }
+                    ),
+                    supportsOpacity: true
+                )
+            } else {
+                languageColorPickers
+            }
         }
         .disabled(!store.config.isEnabled)
+    }
+
+    @ViewBuilder
+    private var languageColorPickers: some View {
+        ColorPicker(
+            "한글 입력 색상",
+            selection: Binding(
+                get: { store.config.koreanColor.swiftUIColor },
+                set: { store.config.koreanColor = ColorData(swiftUI: $0) }
+            ),
+            supportsOpacity: true
+        )
+        ColorPicker(
+            "영문 입력 색상",
+            selection: Binding(
+                get: { store.config.englishColor.swiftUIColor },
+                set: { store.config.englishColor = ColorData(swiftUI: $0) }
+            ),
+            supportsOpacity: true
+        )
     }
 
     private var thicknessSection: some View {

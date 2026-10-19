@@ -126,3 +126,9 @@
   - Notarization 시크릿(`NOTARY_APPLE_ID`, `NOTARY_TEAM_ID`, `NOTARY_APP_PASSWORD`) 별도. 코드사인 + 모두 설정 시에만 동작.
   - 임시 keychain은 OpenSSL random 24바이트 패스워드, lock timeout 21600s (6시간), `set-key-partition-list`로 `apple-tool:,apple:,codesign:` 파티션 권한 부여.
 - README에 "Release (GitHub Actions 자동화)" 섹션 추가. secrets 설정 표 + 수동 재빌드(`gh workflow run`) 안내 포함.
+
+## 2026-10-19 - 포커스 표시 전용 모드 (한/영 상태 무시)
+
+- `OverlayConfig`에 `ignoresInputSource: Bool`(기본 false), `focusColor: ColorData`(기본 green) 추가. 구버전 저장 데이터는 `decodeIfPresent`로 기본값 폴백.
+- `OverlayContentView.color(for:config:)` — `ignoresInputSource`면 입력 언어와 무관하게 `focusColor` 반환.
+- `PreferencesView` 색상 섹션 — "한/영 상태 무시" 토글 추가. 켜면 단일 "외곽선 색상" 피커, 끄면 기존 한글/영문 피커 표시.

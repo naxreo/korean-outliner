@@ -132,6 +132,10 @@ final class OverlayContentView: NSView {
     }
 
     private static func color(for language: InputLanguage, config: OverlayConfig) -> NSColor {
+        // 포커스 표시 전용 모드: 입력 소스와 무관하게 단일 색상
+        if config.ignoresInputSource {
+            return config.focusColor.nsColor
+        }
         switch language {
         case .korean:
             return config.koreanColor.nsColor
